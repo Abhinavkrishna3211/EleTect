@@ -1,0 +1,187 @@
+#include <Arduino.h>
+#include <U8x8lib.h>
+#include <SoftwareSerial.h>
+#include <TinyGsmClient.h>
+#include <SD.h>
+#include <SPI.h>
+#include <ArduinoJson.h>
+#include <Wire.h>
+#include <RTClib.h> // Library for RTC module
+
+// OLED Display
+U8X8_SSD1306_128X64_NONAME_HW_I2C u8x8(/*reset=*/U8X8_PIN_NONE);
+
+// GSM Module
+SoftwareSerial SerialAT(7, 8); // RX, TX for GSM
+TinyGsm modem(SerialAT);
+TinyGsmClient client(modem);
+
+// LoRa
+HardwareSerial LoRaSerial(1); // Use Serial1 for LoRa
+const int loraBaudRate = 9600;
+
+// SD Card
+const int chipSelect = 10;
+
+// Data buffer
+char recv_buf[512];
+
+// RTC module
+RTC_DS3231 rtc;
+
+// Localities for nodes
+String localities[] = {"Kothamangalam"};
+
+// Setup function
+void setup() {
+    // Initialize serial
+    Serial.begin(115200);
+    LoRaSerial.begin(loraBaudRate);
+    SerialAT.begin(9600);
+
+    // Initialize OLED
+    u8x8.begin();
+    u8x8.setFlipMode(1);
+    u8x8.setFont(u8x8_font_chroma48medium8_r);
+
+    // Initialize SD card
+    if (!SD.begin(chipSelect)) {
+        Serial.println("SD card initialization failed!");
+        u8x8.setCursor(0, 0);
+        u8x8.print("SD fail");
+        return;
+    }
+    Serial.println("SD card initialized.");
+    u8x8.setCursor(0, 0);
+    u8x8.print("SD OK");
+
+    // Initialize GSM module
+    SerialAT.begin(9600);
+    delay(3000);
+    modem.restart();
+    String modemInfo = modem.getModemInfo();
+    Serial.print("Modem: ");
+    Serial.println(modemInfo);
+    u8x8.setCursor(0, 1);
+    u8x8.print("GSM OK");
+
+    // Initialize RTC module
+    if (!rtc.begin()) {
+        Serial.println("Couldn't find RTC");
+        u8x8.setCursor(0, 2);
+        u8x8.print("RTC fail");
+        while (1);
+    }
+    if (rtc.lostPower()) {
+        Serial.println("RTC lost power, setting time!");
+        rtc.adjust(DateTime(F(__DATE__), F(__TIME__)));
+    }
+}
+
+// Function to send SMS
+void sendSMS(const char* number, const char* message) {
+    Serial.print("Sending SMS to ");
+    Serial.print(number);
+    Serial.print(": ");
+    Serial.println(message);
+    modem.sendSMS(number, message);
+}
+
+// Function to save data to SD card
+void saveData(const char* data) {
+    File dataFile = SD.open("elephant_data.csv", FILE_WRITE);
+    if (dataFile) {
+        dataFile.println(data);
+        dataFile.close();
+        Serial.println("Data saved to SD card.");
+    } else {
+        Serial.println("Error opening file on SD card.");
+    }
+}
+
+// Function to send data to Node-RED
+void sendDataToNodeRed(const char* data) {
+    if (!client.connected()) {
+        modem.gprsConnect("your_apn", "your_user", "your_pass");
+        if (modem.gprsConnect()) {
+            Serial.println("Connected to GPRS.");
+        } else {
+            Serial.println("Failed to connect to GPRS.");
+            return;
+        }
+    }
+
+    if (client.connect("your_nodered_ip", 1880)) {
+        Serial.println("Connected to Node-RED.");
+        client.print("POST /elephant_data HTTP/1.1\r\n");
+        client.print("Host: your_nodered_ip\r\n");
+        client.print("Content-Type: application/json\r\n");
+        client.print("Content-Length: ");
+        client.print(strlen(data));
+        client.print("\r\n\r\n");
+        client.print(data);
+        client.stop();
+    } else {
+        Serial.println("Failed to connect to Node-RED.");
+    }
+}
+
+// Function to parse and handle received data
+void handleReceivedData(const char* data) {
+    StaticJsonDocument<256> doc;
+    DeserializationError error = deserializeJson(doc, data);
+    if (error) {
+        Serial.print("deserializeJson() failed: ");
+        Serial.println(error.c_str());
+        return;
+    }
+
+    const char* node = doc["node"];
+    const char* locality = doc["locality"];
+    const char* status = doc["status"];
+    const char* datetime = doc["datetime"];
+
+    char csvData[128];
+    snprintf(csvData, sizeof(csvData), "%s,%s,%s,%s", datetime, node, locality, status);
+    saveData(csvData);
+
+    if (strcmp(status, "elephant detected") == 0) {
+        char smsMessage[128];
+        snprintf(smsMessage, sizeof(smsMessage), "Elephant detected at %s, %s on %s", locality, node, datetime);
+        sendSMS("your_phone_number", smsMessage);
+    }
+
+    sendDataToNodeRed(data);
+}
+
+// Function to get the current date and time
+String getDateTime() {
+    DateTime now = rtc.now();
+    char buf[20];
+    snprintf(buf, sizeof(buf), "%04d-%02d-%02d %02d:%02d:%02d", now.year(), now.month(), now.day(), now.hour(), now.minute(), now.second());
+    return String(buf);
+}
+
+// Main loop
+void loop() {
+    if (LoRaSerial.available() > 0) {
+        int len = LoRaSerial.readBytesUntil('\n', recv_buf, sizeof(recv_buf));
+        recv_buf[len] = '\0';
+        Serial.print("Received: ");
+        Serial.println(recv_buf);
+        
+        // Add date and time to received data
+        String dateTime = getDateTime();
+        StaticJsonDocument<256> doc;
+        DeserializationError error = deserializeJson(doc, recv_buf);
+        if (!error) {
+            doc["datetime"] = dateTime;
+            char jsonBuffer[512];
+            serializeJson(doc, jsonBuffer);
+            handleReceivedData(jsonBuffer);
+        } else {
+            Serial.print("deserializeJson() failed: ");
+            Serial.println(error.c_str());
+        }
+    }
+}
