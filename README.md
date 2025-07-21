@@ -13,3 +13,5 @@ By integrating the Seeed Studio Grove Vision AI V2 module and Xiao ESP32S3 Sense
 This is how we planned to deploy the project.We will be having multiple nodes in the elephant attack prone area which wil spot the elephant and produce deterrent sounds and also a master to which all the nodes will send the information through LoRa and The master willsend alert to the locals when an elephant is spotted near them and aslo will send all of the collected data to the base station from where we can monitor everything and study about the elephant behaviours and track the pattern of elephant sighting which can be used to improve the projects accuracy and make the life of those who are affected safer.
 Some studies shows that elephants are afraid of bee sounds, so we decided to use it as the deterrent sound.
 
+For detailed documentation Check the full tutorial on hackster.io
+https://www.hackster.io/517317/eletect-mitigating-human-elephant-conflict-with-tinyml-31a66d
